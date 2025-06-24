@@ -227,6 +227,8 @@ class Graph:
         if not self.nodes or not self.edges:
             return 0.0, set()
 
+        print(f"开始最密子图精确算法 (节点: {len(self.nodes)}, 边: {len(self.edges)})")
+        
         # 二分搜索的范围
         low = 0.0
         high = float(len(self.edges))
@@ -235,8 +237,13 @@ class Graph:
         best_subgraph = set()
         
         # 二分搜索的精度足够高即可，例如100次迭代
-        for _ in range(100):
+        for iteration in range(100):
             g = (low + high) / 2
+            
+            # 每10次迭代输出一次进度
+            if iteration % 10 == 0:
+                print(f"  二分搜索进度: {iteration}/100, 当前密度范围: [{low:.4f}, {high:.4f}]")
+            
             if g == 0: # 避免除以0
                 is_denser, subgraph = self._check_density_and_get_subgraph(g)
                 if is_denser:
@@ -259,6 +266,9 @@ class Graph:
                 if current_density > best_density:
                     best_density = current_density
                     best_subgraph = subgraph
+                    # 当找到更好的解时也输出信息
+                    if iteration % 5 == 0:
+                        print(f"    找到更优解: 密度 = {best_density:.4f}, 子图大小 = {len(best_subgraph)}")
             else:
                 # 不存在，降低密度上界
                 high = g
@@ -270,6 +280,8 @@ class Graph:
         if not best_subgraph and self.nodes:
             best_subgraph = {next(iter(self.nodes))}
             best_density = 0.0
+
+        print(f"最密子图精确算法完成! 最终密度: {best_density:.4f}, 子图节点数: {len(best_subgraph)}")
 
         if output_file:
             with open(output_file, 'w') as f:
@@ -328,68 +340,92 @@ class Graph:
         else:
             return False, set()
     
-    def densest_subgraph_approx(self, output_file: str = None):
+    def densest_subgraph_approx(self, output_file: str = None) -> Tuple[float, Set[int]]:
         """
-        最密子图2-近似算法
-        Args:
-            output_file: 输出文件路径
-        Returns:
-            tuple: (近似密度, 近似子图节点集合)
+        2-近似最密子图算法
+        返回: (密度, 节点集合)
         """
         start_time = time.time()
         
-        if not self.nodes:
+        if not self.nodes or not self.edges:
+            if output_file:
+                with open(output_file, 'w') as f:
+                    f.write("0.000\n0.0\n")
             return 0.0, set()
         
-        # 2-近似算法：贪心删除度数最小的节点
+        print(f"开始2-近似最密子图算法 (节点: {len(self.nodes)}, 边: {len(self.edges)})")
+        
+        # 初始化
         current_nodes = set(self.nodes)
         best_density = 0.0
         best_subgraph = set()
-        iterations = 0
-        max_iterations = len(self.nodes) * 2  # 防止无限循环
         
-        while current_nodes and len(current_nodes) > 1 and iterations < max_iterations:
-            # 计算当前子图的密度
-            density = self._calculate_subgraph_density(current_nodes)
-            if density > best_density:
-                best_density = density
-                best_subgraph = current_nodes.copy()
+        # 计算初始度数
+        node_degrees = {}
+        for node in current_nodes:
+            node_degrees[node] = len(self.get_neighbors(node) & current_nodes)
+        
+        iteration = 0
+        max_iterations = len(self.nodes)  # 设置最大迭代次数防止无限循环
+        
+        while current_nodes and iteration < max_iterations:
+            iteration += 1
             
-            # 删除度数最小的节点
-            if len(current_nodes) == 1:
+            # 每100次迭代显示一次进度
+            if iteration % 100 == 0 or iteration == 1:
+                print(f"  2-近似算法进度: {iteration}/{max_iterations}, 当前节点数: {len(current_nodes)}")
+            
+            # 计算当前密度
+            current_edges = 0
+            for u, v in self.edges:
+                if u in current_nodes and v in current_nodes:
+                    current_edges += 1
+            
+            if len(current_nodes) > 0:
+                current_density = current_edges / len(current_nodes)
+                if current_density > best_density:
+                    best_density = current_density
+                    best_subgraph = current_nodes.copy()
+            
+            # 如果只剩下很少节点，可以提前停止
+            if len(current_nodes) <= 2:
                 break
-                
-            # 计算每个节点在当前子图中的度数
-            node_degrees = {}
-            for node in current_nodes:
-                node_degrees[node] = len(self.get_neighbors(node) & current_nodes)
             
             # 找到度数最小的节点
-            min_degree = min(node_degrees.values())
-            min_degree_nodes = [node for node, degree in node_degrees.items() if degree == min_degree]
-            min_degree_node = min_degree_nodes[0]  # 如果有多个，选择第一个
+            min_degree = min(node_degrees[node] for node in current_nodes)
+            min_degree_nodes = [node for node in current_nodes 
+                              if node_degrees[node] == min_degree]
             
-            current_nodes.remove(min_degree_node)
-            iterations += 1
-        
-        # 检查剩余的单个节点
-        if len(current_nodes) == 1:
-            density = self._calculate_subgraph_density(current_nodes)
-            if density > best_density:
-                best_density = density
-                best_subgraph = current_nodes.copy()
+            # 移除一个度数最小的节点
+            node_to_remove = min_degree_nodes[0]
+            current_nodes.remove(node_to_remove)
+            
+            # 更新邻居的度数（只有在current_nodes中的节点才需要更新）
+            neighbors = self.get_neighbors(node_to_remove) & current_nodes
+            for neighbor in neighbors:
+                if neighbor in node_degrees:
+                    node_degrees[neighbor] -= 1
+            
+            # 移除已删除节点的度数记录
+            del node_degrees[node_to_remove]
+            
+            # 如果图变得太稀疏，可以提前停止
+            if len(current_nodes) > 0 and current_edges / len(current_nodes) < 0.1:
+                if len(current_nodes) > 1000:  # 只在大图上应用这个优化
+                    print(f"  图变得稀疏，提前停止 (剩余节点: {len(current_nodes)})")
+                    break
         
         end_time = time.time()
         runtime = end_time - start_time
         
-        # 输出结果
+        print(f"2-近似算法完成! 最佳密度: {best_density:.4f}, 子图节点数: {len(best_subgraph)}")
+        
+        # 保存结果
         if output_file:
             with open(output_file, 'w') as f:
-                f.write(f"{runtime:.3f}S\n")
+                f.write(f"{runtime:.3f}s\n")
                 f.write(f"{best_density:.6f}\n")
-                orig_nodes = [self.reverse_mapping.get(node, node) for node in sorted(best_subgraph)]
-                f.write(" ".join(map(str, orig_nodes)) + "\n")
-            print(f"最密子图(2-近似)结果已保存到: {output_file}")
+                f.write(" ".join(str(self.reverse_mapping.get(node, node)) for node in sorted(best_subgraph)))
         
         print(f"最密子图(2-近似)算法完成，运行时间: {runtime:.3f}秒，密度: {best_density:.6f}")
         return best_density, best_subgraph
@@ -631,62 +667,83 @@ class Graph:
         
         plt.close()  # 关闭图形，释放内存
     
-    def show_coreness(self, coreness_data: Dict[int, int] = None, 
-                     save_path: str = None):
-        """
-        显示k-core分解结果的可视化
-        Args:
-            coreness_data: coreness数据，如果为None则自动计算
-            save_path: 保存路径
-        """
-        if coreness_data is None:
-            coreness_data = self.k_cores()
-        
-        if not self.nodes:
-            print("图为空，无法可视化")
-            return
-        
-        # 创建NetworkX图对象
-        G = nx.Graph()
-        G.add_nodes_from(self.nodes)
-        G.add_edges_from(self.edges)
-        
-        # 根据coreness值着色
-        max_coreness = max(coreness_data.values()) if coreness_data else 1
-        colors = []
-        for node in G.nodes():
-            coreness = coreness_data.get(node, 0)
-            # 使用热力图颜色，coreness越高越红
-            intensity = coreness / max_coreness
-            colors.append(plt.cm.Reds(intensity))
-        
-        # 布局
-        pos = nx.spring_layout(G)
-        
-        # 创建图形
-        plt.figure(figsize=(12, 8))
-        nx.draw(G, pos, node_color=colors, node_size=300,
-                with_labels=True, font_size=8, font_weight='bold',
-                edge_color='gray', width=1)
-        
-        plt.title("k-core分解可视化 (颜色深度表示coreness值)", fontsize=16)
-        plt.axis('off')
-        
-        # 添加颜色条
-        sm = plt.cm.ScalarMappable(cmap=plt.cm.Reds, 
-                                  norm=plt.Normalize(vmin=0, vmax=max_coreness))
-        sm.set_array([])
-        plt.colorbar(sm, label='Coreness值')
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"k-core可视化已保存到: {save_path}")
-        else:
-            default_path = "output/coreness_visualization.png"
-            plt.savefig(default_path, dpi=300, bbox_inches='tight')
-            print(f"k-core可视化已保存到: {default_path}")
-        
-        plt.close()
+    def _get_layout(self):
+        """获取图的布局"""
+        try:
+            import networkx as nx
+            # 创建NetworkX图对象
+            G = nx.Graph()
+            G.add_nodes_from(self.nodes)
+            G.add_edges_from(self.edges)
+            
+            # 使用spring布局
+            pos = nx.spring_layout(G, k=1, iterations=50)
+            return pos
+        except Exception as e:
+            print(f"布局计算失败: {e}")
+            # 如果失败，使用简单的随机布局
+            import random
+            pos = {}
+            for node in self.nodes:
+                pos[node] = (random.random(), random.random())
+            return pos
+
+    def show_coreness(self, coreness_values=None, save_path=None):
+        """可视化coreness结构"""
+        try:
+            import matplotlib.pyplot as plt
+            import matplotlib
+            
+            # 设置中文字体
+            plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'SimHei', 'Arial Unicode MS']
+            plt.rcParams['axes.unicode_minus'] = False
+            
+            if coreness_values is None:
+                coreness_values = self.k_cores()
+            
+            if len(self.nodes) > 500:
+                print(f"图太大 ({len(self.nodes)} 节点)，跳过可视化以避免性能问题")
+                return
+            
+            fig, ax = plt.subplots(figsize=(12, 8))
+            
+            # 获取节点位置
+            pos = self._get_layout()
+            
+            # 获取coreness值
+            node_colors = [coreness_values.get(node, 0) for node in self.nodes]
+            
+            # 绘制边
+            for u, v in self.edges:
+                if u in pos and v in pos:
+                    x_coords = [pos[u][0], pos[v][0]]
+                    y_coords = [pos[u][1], pos[v][1]]
+                    ax.plot(x_coords, y_coords, 'gray', alpha=0.3, linewidth=0.5)
+            
+            # 绘制节点
+            scatter = ax.scatter([pos[node][0] for node in self.nodes], 
+                               [pos[node][1] for node in self.nodes],
+                               c=node_colors, cmap='viridis', s=50, alpha=0.8)
+            
+            # 添加colorbar，明确指定ax参数
+            cbar = plt.colorbar(scatter, ax=ax)
+            cbar.set_label('Coreness Value')
+            
+            ax.set_title('Graph Coreness Visualization')
+            ax.set_xlabel('X')
+            ax.set_ylabel('Y')
+            ax.grid(True, alpha=0.3)
+            
+            if save_path:
+                plt.savefig(save_path, dpi=300, bbox_inches='tight')
+                print(f"Coreness可视化已保存到: {save_path}")
+            else:
+                plt.show()
+            
+            plt.close()
+            
+        except Exception as e:
+            print(f"Coreness可视化失败: {e}")
     
     def show_subgraph(self, subgraph_nodes: Set[int], title: str = "子图可视化",
                      highlight_color: str = 'red', save_path: str = None):
